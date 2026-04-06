@@ -1,8 +1,5 @@
 # Cryptographic Overhead Benchmark — ARM Cortex-A72 (Raspberry Pi 4)
 
-> **Article:** *Impact of cryptographic algorithm type on the determinism of multi-level industrial real-time communications based on ARM architecture*
-> **Journal:** Technology Audit and Production Reserves (TAPR), Scopus-indexed
-
 ## Overview
 
 This repository contains the complete benchmark suite used to obtain experimental results in the article. It measures cryptographic processing overhead of three algorithm classes on ARM Cortex-A72 (BCM2711) **without ARMv8 Crypto Extensions** (software-only), and evaluates their impact on the determinism of industrial real-time protocols: EtherCAT, PROFINET IRT, Modbus TCP, OPC UA, and MQTT.
