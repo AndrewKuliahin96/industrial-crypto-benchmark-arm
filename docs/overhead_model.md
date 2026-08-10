@@ -1,48 +1,55 @@
-# Mathematical Model of Cryptographic Overhead (Section 2)
+# Two-parameter per-frame latency model
 
-> Formalization of encryption impact on industrial communication cycle integrity.
+## Model
 
-## Per-Packet Processing Time
+Per-operation (per-frame) cryptographic cost on a CPU-bound path:
 
-The time to encrypt/decrypt a single packet for a chosen algorithm:
+```
+T_sec(L) = T_fixed + L / V_alg          (equation (3) of the paper)
+```
 
-$$T_{sec} = \frac{P}{V_{alg}} \quad (1)$$
+- `T_fixed` — fixed per-packet AEAD framing cost: EVP context creation, key/IV
+  setup, finalization, authentication-tag retrieval, context release;
+- `V_alg` — steady-state cipher throughput;
+- `L` — payload size in bytes.
 
-where:
-- $P$ — payload size (bytes)
-- $V_{alg}$ — measured algorithm throughput (bytes/s)
+Relative cycle overhead against a protocol budget `T_cyc`:
 
-## Cycle Overhead
+```
+eta = T_sec / T_cyc * 100%              (equation (4))
+```
 
-Percentage overhead relative to the protocol cycle budget:
+Design criteria adopted in the paper: `eta <= 10%` (critical) and `eta <= 1%`
+(conservative soft margin). These are engineering design assumptions, not
+normative limits.
 
-$$\eta = \frac{T_{sec}}{T_{cyc}} \times 100\% \quad (2)$$
+## Fitted parameters (native C, Cortex-A72 @ 1.5 GHz, OpenSSL 3.5.6)
 
-where $T_{cyc}$ — target cycle time of the protocol (see Table 1 in the paper).
+Least-squares fit over payloads {16, 64, 128, 256, 1024, 8192, 16384} B,
+mean of 3 runs (`benchmark/compute_model.py`):
 
-## Total Control Loop Latency
+| Algorithm | T_fixed, µs | V_alg (fit), MB/s | V_alg (Test 1), MB/s | deviation | R² |
+|---|---|---|---|---|---|
+| AES-256-GCM | 2.71 | 59.1 | 59.2 | −0.1% | 1.00000 |
+| ChaCha20-Poly1305 | 2.48 | 318.9 | 319.4 | −0.2% | 0.99997 |
 
-Total latency of a control loop with security overhead:
+The fitted `V_alg` matches the independent `openssl speed` measurement (Test 1)
+within 0.2%, cross-validating the two measurement paths. Residuals ≤ 0.25 µs.
 
-$$T_{total} = T_{comm} + N \cdot T_{sec} + T_{proc} \quad (3)$$
+## Feasibility boundaries
 
-where:
-- $T_{comm}$ — base communication latency
-- $N$ — number of nodes in the chain
-- $T_{proc}$ — control logic processing time
+Minimum admissible cycle time for per-frame software AEAD (solve
+`T_sec(L) <= crit * T_cyc`):
 
-## Stability Criterion
+| Frames of 64 B | AES-256-GCM | ChaCha20-Poly1305 |
+|---|---|---|
+| η ≤ 10% (critical) | T_cyc ≥ 37.7 µs | T_cyc ≥ 25.4 µs |
+| η ≤ 1% (soft margin) | T_cyc ≥ 377 µs | T_cyc ≥ 254 µs |
 
-The system remains deterministic if and only if:
+For any other payload, recompute `T_sec(L)` from the fitted parameters above.
 
-$$T_{total} \leq T_{cyc} \quad (4)$$
+## Asymmetric reference point
 
-## Reference Protocol Parameters
-
-| Protocol | Target Cycle ($T_{cyc}$), µs | Typical Payload, Bytes | Hierarchy Level |
-|---|---|---|---|
-| EtherCAT | 100 | 64 | Field (Hard Real-Time) |
-| PROFINET IRT | 250 | 128 | Control (Hard Real-Time) |
-| Modbus TCP | 50,000 | 252 | Control / Operational |
-| OPC UA | 100,000 | 1,024 | Management (Secure) |
-| MQTT + TLS | 200,000 | 1,024 | Cloud / Management |
+Ed25519 (per-operation, full context cycle): sign 127.09 µs, verify 281.49 µs
+= 2.81× the EtherCAT 100 µs budget → per-frame asymmetric authentication is not
+viable at hard real-time cycle times; reserve for session establishment.

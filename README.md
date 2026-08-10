@@ -1,113 +1,78 @@
-# Cryptographic Overhead Benchmark — ARM Cortex-A72 (Raspberry Pi 4)
+# Industrial Crypto Benchmark — ARM Cortex-A72
 
-## Overview
+Benchmarks of cryptographic processing overhead on ARM Cortex-A72 (Raspberry Pi 4,
+BCM2711, no ARMv8 Crypto Extensions) against the timing budgets of real-time
+industrial protocols: EtherCAT, PROFINET IRT, Modbus TCP, and OPC UA.
 
-This repository contains the complete benchmark suite used to obtain experimental results in the article. It measures cryptographic processing overhead of three algorithm classes on ARM Cortex-A72 (BCM2711) **without ARMv8 Crypto Extensions** (software-only), and evaluates their impact on the determinism of industrial real-time protocols: EtherCAT, PROFINET IRT, Modbus TCP, OPC UA, and MQTT.
+Companion repository for the paper *"Cryptographic overhead in ARM-based IIoT
+Edge nodes: AES-256-GCM, ChaCha20-Poly1305 and Ed25519 impact on hard real-time
+industrial protocol determinism"* (Kuliahin, Msallam, Saienko).
 
-## Repository Structure
+## Repository layout
 
-```
-.
-├── benchmark/
-│   ├── run_benchmark.sh     # Main entry point — runs all OpenSSL speed tests
-│   └── parse_results.py     # Parses raw output into structured CSV files
-├── figures/
-│   ├── plot_results.py      # Reproduces Figures 1-3 from benchmark CSV data
-│   └── plot_article_inline.py  # Standalone script from article appendix (hardcoded data)
-├── results/                 # Auto-created by run_benchmark.sh; holds raw output + CSV data
-│   ├── raw_openssl.txt
-│   ├── benchmark.csv        # Symmetric cipher throughput (KB/s per block size)
-│   ├── ed25519.csv          # Ed25519 ops/sec and latency (µs)
-│   └── platform_info.txt    # CPU, OS, OpenSSL version, temperature
-├── docs/
-│   └── overhead_model.md    # Mathematical model — formulas (1)-(4) from Section 2
-└── README.md
-```
+- **benchmark/** — measurement code: `openssl speed` harness (Test 1) and the
+  native C per-operation AEAD benchmark (Test 2)
+- **figures/** — figure-generation scripts and rendered charts
+- **results/** — aggregated measurement data (CSV)
+- **docs/** — the two-parameter latency model and derived feasibility boundaries
 
-## Requirements
-
-| Component   | Requirement |
-|-------------|-------------|
-| Hardware    | Raspberry Pi 4 Model B (BCM2711 / ARM Cortex-A72) |
-| OS          | Raspberry Pi OS 64-bit (Debian-based) |
-| OpenSSL     | >= 3.0 (tested with 3.5.4) |
-| Python      | >= 3.9 |
-| Python libs | `matplotlib`, `numpy` |
+## Test 1 — steady-state cipher throughput
 
 ```bash
-pip install matplotlib numpy
+./benchmark/run_benchmark.sh          # openssl speed -evp, 3 s per block size, 3 runs
 ```
 
-## Running the Benchmark
+Measures amortized steady-state throughput V_alg (KB/s) for AES-256-GCM and
+ChaCha20-Poly1305 over block sizes 16–16384 B. Executed on OpenSSL 3.5.5.
 
-### On Raspberry Pi (full pipeline)
+## Test 2 — per-operation AEAD latency (native C)
 
 ```bash
-# 1. Clone and enter the repo
-git clone https://github.com/AndrewKuliahin96/industrial-crypto-benchmark-arm.git
-cd industrial-crypto-benchmark-arm
-
-# 2. Run benchmark (takes approx. 2-3 minutes)
-chmod +x benchmark/run_benchmark.sh
-./benchmark/run_benchmark.sh
-
-# 3. Parse raw output into CSV
-python3 benchmark/parse_results.py
-
-# 4. Generate figures (PNG, 150 dpi)
-python3 figures/plot_results.py
+cd benchmark
+make                                  # or ./build.sh   (needs libssl-dev >= 3.x)
+sudo ./run_benchmark_c.sh ../results/c_benchmark_results.csv
+python3 compute_model.py ../results/c_benchmark_results.csv
 ```
 
-### On any machine (figures only, using paper data)
+Every measured operation executes the full per-packet OpenSSL EVP sequence
+(context creation, key/IV setup, encryption, finalization, tag retrieval,
+context release), timed individually via `clock_gettime(CLOCK_MONOTONIC_RAW)`:
+2,000 warm-up + 50,000 measured iterations for payloads ≤256 B (10,000 for
+1024 B; 2,000 for 8–16 KiB), 3 independent runs, CPU pinning (`taskset`),
+performance governor, thermal control. Ed25519 sign/verify are measured with
+the same per-operation discipline. Executed on OpenSSL 3.5.6. The CSV also
+records p50/p95/p99 percentiles per series for tail-latency analysis.
 
-If no benchmark CSV is present, `plot_results.py` falls back to hardcoded paper data:
+`compute_model.py` reproduces the paper's Table 3 (protocol cycle overhead),
+the two-parameter model fit T_sec = T_fixed + L/V_alg, and the feasibility
+boundaries (Table 4).
+
+## Key findings (native C, mean of 3 runs)
+
+- Per-frame cost follows T_sec = T_fixed + L/V_alg with R² ≥ 0.9999; the fitted
+  V_alg matches the independent Test 1 throughput within 0.2%.
+- Fixed framing cost: **2.71 µs** (AES-256-GCM) / **2.48 µs** (ChaCha20-Poly1305) —
+  dominates for short industrial frames (≤256 B).
+- EtherCAT (100 µs cycle, 64 B): **3.77%** (AES) / **2.54%** (ChaCha) of the cycle
+  budget — below the 10% critical criterion, above the 1% conservative margin.
+  Feasibility boundaries for 64-B frames: cycles ≥ 37.7/25.4 µs (10%) and
+  ≥ 377/254 µs (1%).
+- Ed25519 verification: **281.49 µs** = 2.81× the EtherCAT cycle budget —
+  per-frame asymmetric authentication is not viable; session establishment only.
+
+## Figures
 
 ```bash
-pip install matplotlib numpy
-python3 figures/plot_results.py
+cd figures
+python3 generate_figures.py           # fig1_throughput, fig2_overhead, fig3_model_fit, fig4_asymmetric
 ```
 
-Or use the standalone inline script from the article appendix:
+## Hardware / software
 
-```bash
-python3 figures/plot_article_inline.py
-```
-
-## Algorithms Tested
-
-| Algorithm | Category | Purpose |
-|-----------|----------|---------|
-| AES-256-GCM | Block cipher (AEAD) | Industry standard |
-| ChaCha20-Poly1305 | Stream cipher (AEAD) | Software-optimized alternative |
-| Ed25519 | Asymmetric (EdDSA) | Device authentication / signatures |
-
-Block sizes: **16, 64, 256, 1024, 8192, 16384 bytes** — matching typical frame sizes in the tested industrial protocols.
-
-## Key Results
-
-| Protocol | Cycle | AES overhead | ChaCha20 overhead |
-|----------|-------|--------------|-------------------|
-| EtherCAT | 100 µs | **11.71%** ⚠ | **2.06%** ✓ |
-| PROFINET IRT | 250 µs | 0.94% ✓ | 0.16% ✓ |
-| Modbus TCP | 50 ms | 0.01% ✓ | ~0% ✓ |
-| OPC UA | 100 ms | 0.02% ✓ | ~0% ✓ |
-
-**Ed25519 verify: ~271 µs — exceeds EtherCAT 100 µs cycle by 2.7×, precludes per-frame authentication.**
-
-ChaCha20-Poly1305 is **5.4–5.8× faster** than AES-256-GCM for block sizes 256–16384 bytes.
-
-## Reproducibility Notes
-
-- Each test runs for **10 seconds** to obtain a statistically significant average
-- Measurements are CPU-bound (local, no network jitter)
-- Cooling: aluminum Armor Case with active cooling (38–42 °C under load)
-- BCM2711 has **no ARMv8 Crypto Extensions** — AES runs entirely in software (worst-case for AES, expected baseline for ChaCha20)
-- Minimum background processes during measurements
-
-## Mathematical Model
-
-See [`docs/overhead_model.md`](docs/overhead_model.md) for the determinism criterion and overhead formulas (1)–(4) from Section 2 of the article.
+Raspberry Pi 4 Model B (BCM2711, 4× Cortex-A72 @ 1.5 GHz, no ARMv8 Crypto
+Extensions), passive cooling (Armor Case), 64-bit Raspberry Pi OS,
+OpenSSL 3.5.x, GCC 14.
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE). All data and figures are provided for research reproducibility.
+Apache 2.0
